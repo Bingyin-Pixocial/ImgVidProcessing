@@ -6,6 +6,7 @@ from torchvision.io import read_video
 import cv2
 import glob
 import numpy as np
+from typing import Union
 
 def extract_frames_from_video(
     video_path: str,
@@ -31,12 +32,65 @@ def extract_frames_from_video(
 
     print(f"Saved {len(video_frames)} frames to {output_dir}/")
 
+def auto_discover_frame_pattern(frames_dir: str) -> str:
+    """
+    Automatically discovers the pattern for frame files in a directory.
+    
+    Args:
+        frames_dir: Directory containing frame images
+        
+    Returns:
+        Pattern string that matches the frame files
+    """
+    # Common image extensions
+    image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tiff', '*.tif']
+    
+    # Common frame naming patterns
+    patterns_to_try = [
+        "frame_*", "frame*", "img_*", "image_*", "shot_*", "pic_*",
+        "*_frame_*", "*_img_*", "*_image_*", "*_shot_*", "*_pic_*"
+    ]
+    
+    # First, try to find any image files
+    for ext in image_extensions:
+        files = glob.glob(os.path.join(frames_dir, ext))
+        if files:
+            # Found some files, now try to determine the pattern
+            files.sort()
+            if len(files) > 0:
+                # Get the first few files to analyze the pattern
+                sample_files = files[:min(5, len(files))]
+                
+                # Try to find a common pattern
+                for pattern in patterns_to_try:
+                    for ext in image_extensions:
+                        test_pattern = pattern + ext[1:]  # Remove the * from extension
+                        matching_files = glob.glob(os.path.join(frames_dir, test_pattern))
+                        if len(matching_files) == len(files):
+                            return test_pattern
+                
+                # If no specific pattern found, use the extension of the first file
+                first_file = os.path.basename(files[0])
+                if '_' in first_file:
+                    # Try to extract pattern with wildcard
+                    parts = first_file.split('_')
+                    if len(parts) >= 2:
+                        # Assume the last part before extension is a number
+                        base_pattern = '_'.join(parts[:-1]) + '_*' + os.path.splitext(first_file)[1]
+                        return base_pattern
+                
+                # Fallback: use the extension of the first file
+                return "*" + os.path.splitext(first_file)[1]
+    
+    # If no files found, return a default pattern
+    return "frame_*.jpg"
+
 def create_video_from_frames(
     frames_dir: str,
     output_video_path: str,
-    filename_pattern: str = "frame_*.jpg",
+    filename_pattern: str = None,
     fps: int = 30,
-    frame_size: tuple | None = None
+    frame_size: Union[tuple, None] = None
 ):
     """
     Reads frames from a directory and combines them into a video file.
@@ -44,7 +98,7 @@ def create_video_from_frames(
     Args:
         frames_dir: Directory containing the frame images
         output_video_path: Path for the output video file
-        filename_pattern: Pattern to match frame files (default: "frame_*.jpg")
+        filename_pattern: Pattern to match frame files (if None, will auto-discover)
         fps: Frames per second for the output video
         frame_size: Tuple of (width, height) for output video. If None, uses first frame size
     """
@@ -59,6 +113,11 @@ def create_video_from_frames(
     output_dir = os.path.dirname(output_video_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    
+    # Auto-discover pattern if not provided
+    if filename_pattern is None:
+        filename_pattern = auto_discover_frame_pattern(frames_dir)
+        print(f"Auto-discovered pattern: {filename_pattern}")
     
     # Get all frame files sorted by name
     frame_files = glob.glob(os.path.join(frames_dir, filename_pattern))
@@ -120,10 +179,10 @@ if __name__ == "__main__":
     parser.add_argument("--frames_dir", help="Directory containing frame images (for create mode)")
     parser.add_argument("--output_video", help="Path for the output video file (for create mode)")
     parser.add_argument("--output_filename", help="Output video filename (e.g., 'my_video.mp4'). If provided, will be combined with --output_video directory")
-    parser.add_argument("--pattern", default="frame_*.jpg", help="Pattern to match frame files (default: frame_*.jpg)")
+    parser.add_argument("--pattern", help="Pattern to match frame files (auto-discovered if not provided)")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second for output video (default: 30)")
-    parser.add_argument("--width", type=int, help="Width of output video (optional)")
-    parser.add_argument("--height", type=int, help="Height of output video (optional)")
+    parser.add_argument("--width", type=int, help="Width of output video (optional, defaults to frame size)")
+    parser.add_argument("--height", type=int, help="Height of output video (optional, defaults to frame size)")
     
     args = parser.parse_args()
     
@@ -156,8 +215,24 @@ if __name__ == "__main__":
                     output_video_path = args.output_filename
             print(f"Using custom filename: {output_video_path}")
         
+        
+        # Determine frame size: use provided width/height if both are specified, otherwise use frame dimensions
         frame_size = None
         if args.width and args.height:
             frame_size = (args.width, args.height)
+        # If only one dimension is provided, use frame dimensions for the other
+        elif args.width or args.height:
+            # Get frame dimensions first - use auto-discovery if pattern not provided
+            pattern_to_use = args.pattern if args.pattern else auto_discover_frame_pattern(args.frames_dir)
+            frame_files = glob.glob(os.path.join(args.frames_dir, pattern_to_use))
+            frame_files.sort()
+            if frame_files:
+                first_frame = cv2.imread(frame_files[0])
+                if first_frame is not None:
+                    frame_height, frame_width = first_frame.shape[:2]
+                    if args.width and not args.height:
+                        frame_size = (args.width, frame_height)
+                    elif args.height and not args.width:
+                        frame_size = (frame_width, args.height)
         
         create_video_from_frames(args.frames_dir, output_video_path, args.pattern, args.fps, frame_size)
